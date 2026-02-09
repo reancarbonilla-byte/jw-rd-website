@@ -1,19 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import dynamic from "next/dynamic";
 import { motion } from "framer-motion";
+import React from "react";
 
-const HeroOrb = dynamic(() => import("./HeroOrb"), {
-  ssr: false,
-  loading: () => (
-    <div className="flex min-h-[320px] items-center justify-center">
-      <div className="h-48 w-48 animate-pulse rounded-full bg-accent/10" />
-    </div>
-  ),
-});
-
-export default function Hero() {
+export default function Hero({
+  rightSlot,
+}: {
+  rightSlot?: React.ReactNode;
+}) {
   return (
     <section
       className="relative pt-24 pb-16 lg:pt-32 lg:pb-24"
@@ -31,6 +26,7 @@ export default function Hero() {
             >
               Empowering Entities to Succeed
             </motion.h1>
+
             <motion.p
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -39,6 +35,7 @@ export default function Hero() {
             >
               Innovative consultation firm supporting a diverse range of industries.
             </motion.p>
+
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -55,18 +52,8 @@ export default function Hero() {
           </div>
 
           <div className="flex flex-col items-center">
-            <div className="w-full max-w-md">
-              <HeroOrb />
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.6, delay: 0.4 }}
-                className="mt-6 rounded-xl border border-accent/30 bg-surface/80 p-4 backdrop-blur-sm"
-              >
-                <p className="text-center text-sm text-text md:text-base">
-                  Welcome. I&apos;m your AI assistant. How can I help you today?
-                </p>
-              </motion.div>
+            <div className="w-full max-w-xl">
+              {rightSlot}
             </div>
           </div>
         </div>
