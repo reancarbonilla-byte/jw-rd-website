@@ -6,9 +6,8 @@ import { Float, Points, PointMaterial } from "@react-three/drei";
 import * as THREE from "three";
 
 function NetworkSphere() {
-  const meshRef = useRef<THREE.Mesh>(null);
-  const pointsRef = useRef<THREE.Points>(null);
-  const particlesRef = useRef<THREE.Points>(null);
+  const groupRef = useRef<THREE.Group>(null);
+  const particlesRef = useRef<THREE.Group>(null);
 
   const sphereGeometry = useMemo(() => {
     const geo = new THREE.IcosahedronGeometry(1.2, 2);
@@ -64,23 +63,20 @@ function NetworkSphere() {
   }, []);
 
   useFrame((state) => {
-    if (meshRef.current) {
-      meshRef.current.rotation.y = state.clock.elapsedTime * 0.15;
-      meshRef.current.rotation.x = Math.sin(state.clock.elapsedTime * 0.1) * 0.1;
-    }
-    if (pointsRef.current) {
-      pointsRef.current.rotation.y = state.clock.elapsedTime * 0.15;
-      pointsRef.current.rotation.x = Math.sin(state.clock.elapsedTime * 0.1) * 0.1;
+    const t = state.clock.elapsedTime;
+    if (groupRef.current) {
+      groupRef.current.rotation.y = t * 0.15;
+      groupRef.current.rotation.x = Math.sin(t * 0.1) * 0.1;
     }
     if (particlesRef.current) {
-      particlesRef.current.rotation.y = state.clock.elapsedTime * 0.02;
+      particlesRef.current.rotation.y = t * 0.02;
     }
   });
 
   return (
-    <group>
+    <group ref={groupRef}>
       <Float speed={0.5} floatIntensity={0.2}>
-        <points ref={pointsRef} geometry={sphereGeometry}>
+        <points geometry={sphereGeometry}>
           <pointsMaterial
             size={0.035}
             color="#7dd3fc"
@@ -98,7 +94,7 @@ function NetworkSphere() {
           />
         </lineSegments>
 
-        <mesh ref={meshRef}>
+        <mesh>
           <sphereGeometry args={[1.15, 32, 32]} />
           <meshBasicMaterial
             color="#0e7490"
@@ -107,16 +103,18 @@ function NetworkSphere() {
           />
         </mesh>
 
-        <Points ref={particlesRef} positions={particles} stride={3} frustumCulled={false}>
-          <PointMaterial
-            transparent
-            color="#7dd3fc"
-            size={0.015}
-            sizeAttenuation
-            depthWrite={false}
-            opacity={0.5}
-          />
-        </Points>
+        <group ref={particlesRef}>
+          <Points positions={particles} stride={3} frustumCulled={false}>
+            <PointMaterial
+              transparent
+              color="#7dd3fc"
+              size={0.015}
+              sizeAttenuation
+              depthWrite={false}
+              opacity={0.5}
+            />
+          </Points>
+        </group>
       </Float>
     </group>
   );
@@ -124,14 +122,22 @@ function NetworkSphere() {
 
 export default function HeroOrb3D() {
   return (
-    <div className="relative h-full min-h-[320px] w-full">
+    <div className="relative h-full min-h-[320px] w-full overflow-hidden rounded-2xl bg-transparent">
       <Canvas
         camera={{ position: [0, 0, 4], fov: 45 }}
         dpr={[1, 2]}
-        gl={{ antialias: true, alpha: true }}
-        className="h-full w-full"
+        frameloop="always"
+        gl={{
+          antialias: true,
+          alpha: true,
+          powerPreference: "high-performance",
+        }}
+        onCreated={({ gl }) => {
+          gl.setClearColor(0x0a0e17, 0);
+        }}
+        className="h-full w-full !bg-transparent"
+        style={{ background: "transparent" }}
       >
-        <color attach="background" args={["transparent"]} />
         <ambientLight intensity={0.3} />
         <pointLight position={[2, 2, 2]} intensity={1} color="#7dd3fc" />
         <pointLight position={[-2, -2, 2]} intensity={0.5} color="#38bdf8" />
