@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Energy Network Orb - Cinematic</title>
+  <style>
+    * { margin: 0; padding: 0; }
+    body { overflow: hidden; background: #020408; }
+    #canvas { display: block; }
+    #overlay {
+      position: fixed; inset: 0; pointer-events: none;
+      background:
+        radial-gradient(ellipse 70% 60% at 50% 40%, transparent 20%, rgba(0,0,0,0.5) 50%, rgba(0,0,0,0.9) 100%);
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="overlay"></div>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+    // ========== TWEAKABLE PARAMETERS ==========
+    // NODE_COUNT: 800–1600 | K_NEIGHBORS: 3–6 | MAX_DIST: k-NN distance threshold
+    // LINE_OPACITY, NODE_SIZE, SHELL_OPACITY, FRESNEL_STRENGTH
+    // RIPPLE_COUNT: 3–5 | RIPPLE_SPEED, RIPPLE_FADE | PARTICLE_COUNT: 300–900
+    // BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD
+    const PARAMS = {
+      NODE_COUNT: 1200,
+      K_NEIGHBORS: 5,
+      MAX_DIST: 0.35,
+      LINE_OPACITY: 0.22,
+      NODE_SIZE: 0.032,
+      NODE_SIZE_VARIANCE: 0.4,
+      SHELL_OPACITY: 0.08,
+      FRESNEL_STRENGTH: 0.65,
+      RIPPLE_COUNT: 5,
+      RIPPLE_SPEED: 0.15,
+      RIPPLE_FADE: 2.2,
+      PARTICLE_COUNT: 600,
+      BLOOM_STRENGTH: 0.55,
+      BLOOM_RADIUS: 0.45,
+      BLOOM_THRESHOLD: 0.12,
+    };
+
+    const canvas = document.getElementById('canvas');
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.1, 100);
+    camera.position.set(0, 0.3, 7.2);
+    camera.lookAt(0, 0, 0);
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+    renderer.setClearColor(0x020408, 1);
+
+    // ---------- Background: near-black gradient + faint circular haze ----------
+    const bgGeo = new THREE.PlaneGeometry(30, 30);
+    const bgMat = new THREE.ShaderMaterial({
+      uniforms: { uTime: { value: 0 } },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        varying vec2 vUv;
+        void main() {
+          vec2 c = vUv - 0.5;
+          float d = length(c);
+          float vignette = 1.0 - smoothstep(0.3, 1.2, d);
+          float gradient = 1.0 - vUv.y * 0.15;
+          vec3 col = mix(vec3(0.01, 0.015, 0.025), vec3(0.02, 0.03, 0.05), gradient);
+          float haze = exp(-d * 2.5) * 0.12;
+          col += vec3(0.3, 0.5, 0.6) * haze;
+          col *= 0.7 + vignette * 0.3;
+          gl_FragColor = vec4(col, 1.0);
+        }
+      `,
+      depthWrite: false,
+    });
+    const bg = new THREE.Mesh(bgGeo, bgMat);
+    bg.position.z = -15;
+    bg.frustumCulled = false;
+    bg.renderOrder = -1000;
+    scene.add(bg);
+
+    // ---------- Create soft sprite texture for nodes ----------
+    const spriteCanvas = document.createElement('canvas');
+    spriteCanvas.width = 64;
+    spriteCanvas.height = 64;
+    const ctx = spriteCanvas.getContext('2d');
+    const spriteGrad = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    spriteGrad.addColorStop(0, 'rgba(255,255,255,0.95)');
+    spriteGrad.addColorStop(0.3, 'rgba(199,240,255,0.6)');
+    spriteGrad.addColorStop(0.6, 'rgba(125,211,252,0.2)');
+    spriteGrad.addColorStop(1, 'rgba(125,211,252,0)');
+    ctx.fillStyle = spriteGrad;
+    ctx.fillRect(0, 0, 64, 64);
+    const spriteTex = new THREE.CanvasTexture(spriteCanvas);
+
+    // ---------- Node positions: on and slightly inside sphere ----------
+    const nodes = [];
+    for (let i = 0; i < PARAMS.NODE_COUNT; i++) {
+      const u = Math.random();
+      const v = Math.random();
+      const theta = u * Math.PI * 2;
+      const phi = Math.acos(2 * v - 1);
+      const r = 0.85 + Math.random() * 0.65;
+      const x = r * Math.sin(phi) * Math.cos(theta);
+      const y = r * Math.sin(phi) * Math.sin(theta);
+      const z = r * Math.cos(phi);
+      nodes.push({ x, y, z, size: 1 + (Math.random() - 0.5) * PARAMS.NODE_SIZE_VARIANCE, twinkle: Math.random() });
+    }
+
+    // ---------- K-NN connections ----------
+    const linePairs = [];
+    const positions = nodes.map(n => new THREE.Vector3(n.x, n.y, n.z));
+    for (let i = 0; i < nodes.length; i++) {
+      const dists = positions.map((p, j) => ({ j, d: positions[i].distanceTo(p) }));
+      dists.sort((a, b) => a.d - b.d);
+      let count = 0;
+      for (let k = 1; k < dists.length && count < PARAMS.K_NEIGHBORS; k++) {
+        if (dists[k].d < PARAMS.MAX_DIST) {
+          linePairs.push([i, dists[k].j]);
+          count++;
+        }
+      }
+    }
+    const lineGeo = new THREE.BufferGeometry();
+    const linePos = new Float32Array(linePairs.length * 6);
+    linePairs.forEach(([a, b], i) => {
+      linePos[i*6] = nodes[a].x; linePos[i*6+1] = nodes[a].y; linePos[i*6+2] = nodes[a].z;
+      linePos[i*6+3] = nodes[b].x; linePos[i*6+4] = nodes[b].y; linePos[i*6+5] = nodes[b].z;
+    });
+    lineGeo.setAttribute('position', new THREE.BufferAttribute(linePos, 3));
+    lineGeo.setDrawRange(0, linePairs.length * 2);
+    const lineMat = new THREE.LineBasicMaterial({
+      color: 0xa8e6ff,
+      transparent: true,
+      opacity: PARAMS.LINE_OPACITY,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const lineMesh = new THREE.LineSegments(lineGeo, lineMat);
+    scene.add(lineMesh);
+
+    // ---------- Node points (sprite glow) ----------
+    const nodePosArr = new Float32Array(nodes.length * 3);
+    nodes.forEach((n, i) => {
+      nodePosArr[i*3] = n.x; nodePosArr[i*3+1] = n.y; nodePosArr[i*3+2] = n.z;
+    });
+    const nodeGeo = new THREE.BufferGeometry();
+    nodeGeo.setAttribute('position', new THREE.BufferAttribute(nodePosArr, 3));
+    const nodeMat = new THREE.PointsMaterial({
+      color: 0xc7f0ff,
+      size: PARAMS.NODE_SIZE,
+      map: spriteTex,
+      transparent: true,
+      opacity: 0.9,
+      sizeAttenuation: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      alphaTest: 0.01,
+    });
+    const nodePoints = new THREE.Points(nodeGeo, nodeMat);
+    scene.add(nodePoints);
+
+    // ---------- Glassy outer shell with Fresnel rim glow ----------
+    const shellGeo = new THREE.SphereGeometry(1.52, 96, 96);
+    const shellMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      side: THREE.BackSide,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uOpacity: { value: PARAMS.SHELL_OPACITY },
+        uFresnel: { value: PARAMS.FRESNEL_STRENGTH },
+        uColor: { value: new THREE.Color(0x7dd3fc) },
+      },
+      vertexShader: `
+        varying vec3 vNormal;
+        varying vec3 vViewPosition;
+        void main() {
+          vNormal = normalize(normalMatrix * normal);
+          vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+          vViewPosition = -mvPos.xyz;
+          gl_Position = projectionMatrix * mvPos;
+        }
+      `,
+      fragmentShader: `
+        uniform float uOpacity;
+        uniform float uFresnel;
+        uniform vec3 uColor;
+        varying vec3 vNormal;
+        varying vec3 vViewPosition;
+        void main() {
+          vec3 viewDir = normalize(vViewPosition);
+          float fresnel = pow(1.0 - max(0.0, dot(viewDir, vNormal)), 2.5);
+          float alpha = uOpacity + fresnel * uFresnel;
+          alpha = min(1.0, alpha);
+          gl_FragColor = vec4(uColor, alpha * 0.5);
+        }
+      `,
+    });
+    const shell = new THREE.Mesh(shellGeo, shellMat);
+    scene.add(shell);
+
+    // ---------- Faint circular haze behind orb ----------
+    const hazeGeo = new THREE.SphereGeometry(2.2, 48, 48);
+    const hazeMat = new THREE.MeshBasicMaterial({
+      color: 0x7dd3fc,
+      transparent: true,
+      opacity: 0.04,
+      depthWrite: false,
+      side: THREE.BackSide,
+    });
+    const haze = new THREE.Mesh(hazeGeo, hazeMat);
+    haze.position.z = -0.5;
+    scene.add(haze);
+
+    // ---------- Platform: soft luminous base (gradient disc) ----------
+    const platformY = -2.2;
+    const platformGeo = new THREE.PlaneGeometry(5, 5, 1, 1);
+    const platformMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      uniforms: { uColor: { value: new THREE.Color(0x7dd3fc) } },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uColor;
+        varying vec2 vUv;
+        void main() {
+          vec2 c = vUv - 0.5;
+          float d = length(c) * 2.0;
+          float alpha = exp(-d * 1.8) * 0.35;
+          gl_FragColor = vec4(uColor, alpha);
+        }
+      `,
+    });
+    const platform = new THREE.Mesh(platformGeo, platformMat);
+    platform.rotation.x = -Math.PI / 2;
+    platform.position.y = platformY;
+    scene.add(platform);
+
+    // ---------- Ripple rings: shader-based soft radial gradient ----------
+    const ripplePhases = [];
+    for (let i = 0; i < PARAMS.RIPPLE_COUNT; i++) {
+      const ringGeo = new THREE.RingGeometry(0.15, 0.5, 64);
+      const ringMat = new THREE.ShaderMaterial({
+        transparent: true,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+        uniforms: {
+          uColor: { value: new THREE.Color(0x7dd3fc) },
+          uOpacity: { value: 0.4 },
+        },
+        vertexShader: `
+          varying float vRadial;
+          void main() {
+            vRadial = length(position.xz) / 0.5;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform vec3 uColor;
+          uniform float uOpacity;
+          varying float vRadial;
+          void main() {
+            float r = vRadial;
+            float inner = 0.3;
+            float outer = 1.0;
+            float band = smoothstep(inner - 0.2, inner + 0.1, r) * smoothstep(outer + 0.15, outer - 0.1, r);
+            float soft = 1.0 - smoothstep(0.7, 1.0, r);
+            float alpha = band * soft * uOpacity;
+            gl_FragColor = vec4(uColor, alpha);
+          }
+        `,
+      });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = platformY + 0.02;
+      ripplePhases.push({ mesh: ring, phase: i / PARAMS.RIPPLE_COUNT });
+      scene.add(ring);
+    }
+
+    // ---------- Light column: soft volumetric, fades at edges ----------
+    const columnGeo = new THREE.CylinderGeometry(0.9, 0.5, 2.4, 48, 1, true);
+    const columnMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      side: THREE.BackSide,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uColor: { value: new THREE.Color(0x7dd3fc) },
+        uTime: { value: 0 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        varying float vRadial;
+        void main() {
+          vUv = uv;
+          vRadial = length(position.xz);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uColor;
+        uniform float uTime;
+        varying vec2 vUv;
+        varying float vRadial;
+        void main() {
+          float radial = 1.0 - smoothstep(0.0, 1.0, vRadial / 0.9);
+          float vert = smoothstep(0.0, 0.2, vUv.y) * smoothstep(1.0, 0.7, vUv.y);
+          float alpha = radial * vert * 0.18;
+          gl_FragColor = vec4(uColor, alpha);
+        }
+      `,
+    });
+    const column = new THREE.Mesh(columnGeo, columnMat);
+    column.position.y = platformY + 1.2;
+    scene.add(column);
+
+    // ---------- Particles: 300-900 spark particles ----------
+    const partArr = new Float32Array(PARAMS.PARTICLE_COUNT * 3);
+    const partDrift = [];
+    for (let i = 0; i < PARAMS.PARTICLE_COUNT; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const r = 1.4 + Math.random() * 1.8;
+      const y = platformY + Math.random() * 4;
+      partArr[i*3] = Math.cos(angle) * r * (0.5 + Math.random() * 0.5);
+      partArr[i*3+1] = y;
+      partArr[i*3+2] = Math.sin(angle) * r * (0.5 + Math.random() * 0.5);
+      partDrift.push({ dy: 0.02 + Math.random() * 0.03, noise: Math.random() * 100 });
+    }
+    const partGeo = new THREE.BufferGeometry();
+    partGeo.setAttribute('position', new THREE.BufferAttribute(partArr, 3));
+    const partMat = new THREE.PointsMaterial({
+      color: 0xa8e6ff,
+      size: 0.012,
+      map: spriteTex,
+      transparent: true,
+      opacity: 0.45,
+      sizeAttenuation: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      alphaTest: 0.01,
+    });
+    const particles = new THREE.Points(partGeo, partMat);
+    scene.add(particles);
+
+    // ---------- Post-processing ----------
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(innerWidth, innerHeight),
+      PARAMS.BLOOM_STRENGTH,
+      PARAMS.BLOOM_RADIUS,
+      PARAMS.BLOOM_THRESHOLD,
+    );
+    composer.addPass(bloomPass);
+
+    let time = 0;
+    const partPos = partGeo.attributes.position.array;
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = 0.016;
+      time += dt;
+
+      bgMat.uniforms.uTime.value = time;
+
+      // Network rotation only (nodes + lines)
+      lineMesh.rotation.y += dt * 0.08;
+      nodePoints.rotation.y += dt * 0.08;
+      shell.rotation.y += dt * 0.002;
+
+      // Node twinkle
+      nodeMat.opacity = 0.82 + Math.sin(time * 1.2) * 0.08;
+      lineMat.opacity = PARAMS.LINE_OPACITY + Math.sin(time * 0.8) * 0.03;
+
+      // Ripples: expand and fade
+      ripplePhases.forEach((r, i) => {
+        const phase = (time * PARAMS.RIPPLE_SPEED + r.phase) % 1;
+        r.mesh.scale.setScalar(0.5 + phase * 3.5);
+        const eased = 1 - Math.pow(phase, PARAMS.RIPPLE_FADE);
+        r.mesh.material.uniforms.uOpacity.value = eased * 0.32;
+      });
+
+      // Particle drift
+      for (let i = 0; i < PARAMS.PARTICLE_COUNT; i++) {
+        partPos[i*3+1] += partDrift[i].dy * dt;
+        const n = partDrift[i].noise;
+        partPos[i*3] += Math.sin(time + n) * 0.002;
+        partPos[i*3+2] += Math.cos(time * 0.7 + n) * 0.002;
+        if (partPos[i*3+1] > 2.5) partPos[i*3+1] = platformY + Math.random();
+      }
+      partGeo.attributes.position.needsUpdate = true;
+      particles.material.opacity = 0.4 + Math.sin(time * 0.9) * 0.08;
+
+      columnMat.uniforms.uTime.value = time;
+
+      bloomPass.resolution.set(innerWidth, innerHeight);
+      composer.render();
+    }
+
+    window.addEventListener('resize', () => {
+      const w = innerWidth, h = innerHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+      composer.setSize(w, h);
+      composer.setPixelRatio(Math.min(2, devicePixelRatio));
+      bloomPass.resolution.set(w, h);
+    });
+
+    animate();
+  </script>
+</body>
+</html>

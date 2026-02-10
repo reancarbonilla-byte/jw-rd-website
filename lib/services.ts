@@ -1,14 +1,13 @@
 import type { LucideIcon } from "lucide-react";
 import {
-  Briefcase,
+  MessageSquare,
   PenTool,
   Megaphone,
-  Globe,
+  Code,
   Smartphone,
+  Palette,
   FlaskConical,
-  Video,
   Database,
-  Sparkles,
 } from "lucide-react";
 
 export type Service = {
@@ -25,7 +24,7 @@ export const SERVICES: Service[] = [
     title: "Consultation",
     description:
       "Expert guidance in marketing, media production, brand development, engineering, and research, all tailored to meet your unique goals.",
-    Icon: Briefcase,
+    Icon: MessageSquare,
     iconSrc: "/icons/consultation.svg",
   },
   {
@@ -33,7 +32,7 @@ export const SERVICES: Service[] = [
     title: "Content Creation",
     description:
       "Creating unforgettable product with top industry talents and teams for a lasting impact.",
-    Icon: Sparkles,
+    Icon: PenTool,
     iconSrc: "/icons/content-creation.svg",
   },
   {
@@ -49,7 +48,7 @@ export const SERVICES: Service[] = [
     title: "Web Development",
     description:
       "Modern, responsive websites built for performance and conversion.",
-    Icon: Globe,
+    Icon: Code,
     iconSrc: "/icons/web-development.svg",
   },
   {
@@ -65,7 +64,7 @@ export const SERVICES: Service[] = [
     title: "Graphic Design",
     description:
       "Branding, visuals, and UI assets that stay consistent and memorable.",
-    Icon: PenTool,
+    Icon: Palette,
     iconSrc: "/icons/graphic-design.svg",
   },
   {
@@ -75,14 +74,6 @@ export const SERVICES: Service[] = [
       "Strategic experimentation, prototyping, and technical exploration.",
     Icon: FlaskConical,
     iconSrc: "/icons/research-development.svg",
-  },
-  {
-    id: "video-editing",
-    title: "Video Editing",
-    description:
-      "Clean edits, motion, and story-driven post production.",
-    Icon: Video,
-    iconSrc: "/icons/video-editing.svg",
   },
   {
     id: "data-entry",
