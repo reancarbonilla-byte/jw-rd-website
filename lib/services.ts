@@ -8,6 +8,13 @@ import {
   Palette,
   FlaskConical,
   Database,
+  Cpu,
+  Globe,
+  Zap,
+  BarChart3,
+  FileCode,
+  Layers,
+  Lightbulb,
 } from "lucide-react";
 
 export type Service = {
@@ -82,5 +89,61 @@ export const SERVICES: Service[] = [
       "Accurate, structured data support for fast operations.",
     Icon: Database,
     iconSrc: "/icons/data-entry.svg",
+  },
+  {
+    id: "software",
+    title: "Software Development",
+    description:
+      "Custom software solutions for your business needs.",
+    Icon: Cpu,
+    iconSrc: "/icons/app-development.svg",
+  },
+  {
+    id: "digital",
+    title: "Digital Strategy",
+    description:
+      "Online presence and digital transformation.",
+    Icon: Globe,
+    iconSrc: "/icons/web-development.svg",
+  },
+  {
+    id: "automation",
+    title: "Automation",
+    description:
+      "Streamline workflows with smart automation.",
+    Icon: Zap,
+    iconSrc: "/icons/research-development.svg",
+  },
+  {
+    id: "analytics",
+    title: "Analytics",
+    description:
+      "Data-driven insights for better decisions.",
+    Icon: BarChart3,
+    iconSrc: "/icons/data-entry.svg",
+  },
+  {
+    id: "integration",
+    title: "Integration",
+    description:
+      "Connect your systems seamlessly.",
+    Icon: FileCode,
+    iconSrc: "/icons/web-development.svg",
+  },
+  {
+    id: "design-systems",
+    title: "Design Systems",
+    description:
+      "Scalable design frameworks and components.",
+    Icon: Layers,
+    iconSrc: "/icons/graphic-design.svg",
+  },
+  {
+    id: "innovation",
+    title: "Innovation",
+    description:
+      "Creative solutions for complex challenges.",
+    Icon: Lightbulb,
+    iconSrc: "/icons/research-development.svg",
   },
 ];

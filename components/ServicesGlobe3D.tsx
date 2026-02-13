@@ -1,48 +1,26 @@
 "use client";
 
 import * as THREE from "three";
-import React, { useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Points, PointMaterial, Html } from "@react-three/drei";
 import { EffectComposer, Bloom } from "@react-three/postprocessing";
 import type { Service } from "@/lib/services";
 
 /* ----------------------------
-  TWEAKABLE PARAMETERS
-  orb.size          - Globe radius (default 1.45)
-  orb.glowStrength  - Core emissive intensity
-  orb.nodeDensity   - Icosahedron subdivisions (3–5)
-  orb.lineOpacity   - Network line opacity (0.2–0.4)
-  ripple.speed      - Ripple expansion speed
-  ripple.fadeSpeed  - Ripple fade-out rate
-  particles.*       - Particle counts and drift
-  bloom.strength    - Bloom intensity (0.4–1)
-  bloom.radius      - Bloom spread
-  bloom.threshold   - Luminance cutoff (lower = more glow)
+  TWEAKABLE: orb.size, orb.nodeDensity, orb.lineOpacity, orb.nodeSize
+  particles.count, bloom.*, platform.*
 ----------------------------- */
 const CONFIG = {
   orb: {
-    size: 1.45,
-    glowStrength: 0.2,
+    size: 1.4,
     nodeDensity: 4,
-    lineOpacity: 0.28,
-    rimLightIntensity: 0.4,
+    lineOpacity: 0.3,
+    nodeSize: 0.016,
   },
-  ripple: {
-    speed: 0.2,
-    thickness: 0.4,
-    fadeSpeed: 1.2,
-  },
-  particles: {
-    magicDustCount: 800,
-    driftSpeed: 0.02,
-    auraCount: 1200,
-  },
-  bloom: {
-    strength: 0.6,
-    radius: 0.4,
-    threshold: 0.2,
-  },
+  particles: { count: 320 },
+  bloom: { strength: 0.55, radius: 0.4, threshold: 0.18 },
+  platform: { y: -2.2, rippleSpeed: 0.15, rippleCount: 5 },
 };
 
 /* ----------------------------
@@ -53,31 +31,28 @@ function damp(current: number, target: number, lambda: number, dt: number) {
 }
 
 /* ----------------------------
-  Network Shell - dense geodesic globe
+  Globe - geodesic wireframe + nodes
 ----------------------------- */
-function NetworkShell({ speed }: { speed: number }) {
+function Globe({ speed }: { speed: number }) {
   const linesRef = useRef<THREE.LineSegments>(null);
   const nodesRef = useRef<THREE.Points>(null);
 
   const { wireGeom, nodePositions } = useMemo(() => {
     const ico = new THREE.IcosahedronGeometry(1.5, CONFIG.orb.nodeDensity);
-    const wire = new THREE.EdgesGeometry(ico, 8);
-    const nodes = new Float32Array(ico.attributes.position.array as Float32Array);
+    const wire = new THREE.EdgesGeometry(ico, 10);
+    const pos = ico.attributes.position;
+    const nodes = new Float32Array(pos.array as Float32Array);
     return { wireGeom: wire, nodePositions: nodes };
   }, []);
 
   useFrame((state, delta) => {
-    const t = state.clock.elapsedTime;
-
     if (linesRef.current) {
       linesRef.current.rotation.y += delta * 0.12 * speed;
-      const m = linesRef.current.material as THREE.LineBasicMaterial;
-      m.opacity = CONFIG.orb.lineOpacity + Math.sin(t * 0.8) * 0.03;
+      (linesRef.current.material as THREE.LineBasicMaterial).opacity =
+        CONFIG.orb.lineOpacity + Math.sin(state.clock.elapsedTime * 0.8) * 0.02;
     }
     if (nodesRef.current) {
       nodesRef.current.rotation.y += delta * 0.12 * speed;
-      const m = nodesRef.current.material as THREE.PointsMaterial;
-      m.opacity = 0.8 + Math.sin(t * 0.9) * 0.06;
     }
   });
 
@@ -91,17 +66,16 @@ function NetworkShell({ speed }: { speed: number }) {
           depthWrite={false}
         />
       </lineSegments>
-
       <points ref={nodesRef}>
         <bufferGeometry>
           <bufferAttribute attach="attributes-position" args={[nodePositions, 3]} />
         </bufferGeometry>
         <pointsMaterial
           color="#c7f0ff"
-          size={0.018}
+          size={CONFIG.orb.nodeSize}
           sizeAttenuation
           transparent
-          opacity={0.88}
+          opacity={0.9}
           depthWrite={false}
         />
       </points>
@@ -110,262 +84,140 @@ function NetworkShell({ speed }: { speed: number }) {
 }
 
 /* ----------------------------
-  Gradient texture - smooth radial + vertical fade to transparent
-  For cylinder: u = around, v = height. Fades at sides and top/bottom.
+  Aura - soft particles around globe
 ----------------------------- */
-function createStreamGradientTexture() {
+function GlobeAura({ speed }: { speed: number }) {
+  const ref = useRef<THREE.Points>(null);
+  const particles = useMemo(() => {
+    const arr = new Float32Array(200 * 3);
+    for (let i = 0; i < 200; i++) {
+      const r = 1.7 + Math.random() * 0.5;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      arr[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+      arr[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      arr[i * 3 + 2] = r * Math.cos(phi);
+    }
+    return arr;
+  }, []);
+
+  useFrame((_, delta) => {
+    if (ref.current) {
+      ref.current.rotation.y += delta * 0.2 * speed;
+    }
+  });
+
+  return (
+    <Points ref={ref} positions={particles} stride={3} frustumCulled={false}>
+      <PointMaterial
+        transparent
+        color="#7dd3fc"
+        size={0.015}
+        sizeAttenuation
+        depthWrite={false}
+        opacity={0.35}
+        blending={THREE.AdditiveBlending}
+      />
+    </Points>
+  );
+}
+
+/* ----------------------------
+  Platform - central light, upward beam, ripple rings
+----------------------------- */
+function createBeamGradientTexture() {
   if (typeof document === "undefined") return null;
   const w = 128;
   const h = 128;
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d");
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d");
   if (!ctx) return null;
-  const imageData = ctx.createImageData(w, h);
-  const data = imageData.data;
+  const id = ctx.createImageData(w, h);
+  const d = id.data;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const u = x / (w - 1);
       const v = y / (h - 1);
-      const distFromCenterU = Math.abs(u - 0.5) * 2;
-      const distFromCenterV = Math.abs(v - 0.5) * 2;
-      const radial = 1 - Math.pow(distFromCenterU, 1.2);
-      const vertical = 1 - Math.pow(distFromCenterV, 1.5);
-      const alpha = Math.max(0, Math.min(1, radial * vertical)) * 255;
+      const radial = 1 - Math.abs(u - 0.5) * 2;
+      const vertical = Math.sin(v * Math.PI);
+      const alpha = Math.max(0, radial * vertical) * 200;
       const i = (y * w + x) * 4;
-      data[i] = 255;
-      data[i + 1] = 255;
-      data[i + 2] = 255;
-      data[i + 3] = alpha;
+      d[i] = d[i + 1] = d[i + 2] = 255;
+      d[i + 3] = alpha;
     }
   }
-  ctx.putImageData(imageData, 0, 0);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.wrapS = THREE.ClampToEdgeWrapping;
-  tex.wrapT = THREE.ClampToEdgeWrapping;
-  return tex;
+  ctx.putImageData(id, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  return t;
 }
 
-/* ----------------------------
-  Animated Ripple Rings - smooth, slow, water-like
------------------------------ */
-function RippleRings({ speed, platformY }: { speed: number; platformY: number }) {
-  const ringRefs = useRef<(THREE.Mesh | null)[]>([]);
-  const phaseRef = useRef([0, 0.22, 0.44, 0.66, 0.88, 0.1, 0.32]);
+function PlatformAndBeam({ speed }: { speed: number }) {
+  const platformY = CONFIG.platform.y;
+  const beamTex = useMemo(() => createBeamGradientTexture(), []);
+  const rippleRefs = useRef<(THREE.Mesh | null)[]>([]);
+  const phases = useRef(
+    Array.from({ length: CONFIG.platform.rippleCount }, (_, i) => i / CONFIG.platform.rippleCount)
+  );
 
   useFrame((state) => {
-    const t = state.clock.elapsedTime * CONFIG.ripple.speed * speed;
-    ringRefs.current.forEach((ring, i) => {
+    const t = state.clock.elapsedTime * CONFIG.platform.rippleSpeed * speed;
+    rippleRefs.current.forEach((ring, i) => {
       if (!ring) return;
-      const phase = (t + phaseRef.current[i]) % 1;
-      const scale = 0.4 + phase * 4.2;
-      ring.scale.setScalar(scale);
+      const phase = (t + phases.current[i]) % 1;
+      ring.scale.setScalar(0.4 + phase * 3.2);
       const mat = ring.material as THREE.MeshBasicMaterial;
-      const eased = 1 - phase;
-      mat.opacity = Math.max(0, eased * eased * eased * 0.24);
+      mat.opacity = Math.max(0, (1 - phase) ** 2 * 0.28);
     });
   });
 
   return (
-    <group position={[0, platformY + 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-      {[0, 1, 2, 3, 4, 5, 6].map((i) => (
-        <mesh
-          key={i}
-          ref={(el) => {
-            ringRefs.current[i] = el;
-          }}
-        >
-          <ringGeometry args={[0.35, 0.75, 64]} />
-          <meshBasicMaterial
-            color="#7dd3fc"
-            transparent
-            opacity={0.22}
-            side={THREE.DoubleSide}
-            depthWrite={false}
-            blending={THREE.AdditiveBlending}
-          />
-        </mesh>
-      ))}
-    </group>
-  );
-}
-
-/* ----------------------------
-  Magical Aura - particles surrounding the globe
------------------------------ */
-function GlobeMagicalAura({ speed }: { speed: number }) {
-  const auraRef = useRef<THREE.Points>(null);
-  const auraRef2 = useRef<THREE.Points>(null);
-
-  const auraParticles = useMemo(() => {
-    const count = 280;
-    const arr = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      const r = 1.75 + Math.random() * 0.6;
-      const theta = Math.random() * Math.PI * 2;
-      const u = Math.random() * 2 - 1;
-      const phi = Math.acos(u);
-      arr[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      arr[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-      arr[i * 3 + 2] = r * Math.cos(phi);
-    }
-    return arr;
-  }, []);
-
-  const auraParticles2 = useMemo(() => {
-    const count = 120;
-    const arr = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      const r = 1.9 + Math.random() * 0.5;
-      const theta = Math.random() * Math.PI * 2;
-      const u = Math.random() * 2 - 1;
-      const phi = Math.acos(u);
-      arr[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      arr[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-      arr[i * 3 + 2] = r * Math.cos(phi);
-    }
-    return arr;
-  }, []);
-
-  useFrame((state, delta) => {
-    const t = state.clock.elapsedTime;
-    if (auraRef.current) {
-      auraRef.current.rotation.y += delta * 0.25 * speed;
-      auraRef.current.rotation.x = Math.sin(t * 0.15) * 0.1;
-      const m = auraRef.current.material as THREE.PointsMaterial;
-      m.opacity = 0.5 + Math.sin(t * 1.1) * 0.15;
-    }
-    if (auraRef2.current) {
-      auraRef2.current.rotation.y -= delta * 0.18 * speed;
-      auraRef2.current.rotation.x = Math.sin(t * 0.12 + 1) * 0.08;
-      const m = auraRef2.current.material as THREE.PointsMaterial;
-      m.opacity = 0.35 + Math.sin(t * 0.9 + 0.5) * 0.1;
-    }
-  });
-
-  return (
     <group>
-      <Points ref={auraRef} positions={auraParticles} stride={3} frustumCulled={false}>
-        <PointMaterial
-          transparent
-          color="#c7f0ff"
-          size={0.018}
-          sizeAttenuation
-          depthWrite={false}
-          opacity={0.4}
-          blending={THREE.AdditiveBlending}
-        />
-      </Points>
-      <Points ref={auraRef2} positions={auraParticles2} stride={3} frustumCulled={false}>
-        <PointMaterial
-          transparent
-          color="#7dd3fc"
-          size={0.012}
-          sizeAttenuation
-          depthWrite={false}
-          opacity={0.28}
-          blending={THREE.AdditiveBlending}
-        />
-      </Points>
-    </group>
-  );
-}
-
-/* ----------------------------
-  Platform + Aura + Connecting Particles
------------------------------ */
-function PlatformAndAura({ speed }: { speed: number }) {
-  const auraRef = useRef<THREE.Mesh>(null);
-  const particlesRef = useRef<THREE.Points>(null);
-
-  const platformY = -2.4;
-  const streamRadius = 0.6;
-
-  const alphaMap = useMemo(() => createStreamGradientTexture(), []);
-
-  const risingParticles = useMemo(() => {
-    const count = 180;
-    const arr = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      const angle = Math.random() * Math.PI * 2;
-      const r = Math.random() * streamRadius * 0.8;
-      const baseY = platformY + Math.random() * 0.2;
-      const height = 2.2 + Math.random() * 2.4;
-      const progress = Math.random();
-      const y = baseY + height * progress;
-
-      arr[i * 3] = Math.cos(angle) * r * (1 - progress * 0.6);
-      arr[i * 3 + 1] = y;
-      arr[i * 3 + 2] = Math.sin(angle) * r * (1 - progress * 0.6);
-    }
-    return arr;
-  }, []);
-
-  useFrame((state, delta) => {
-    const t = state.clock.elapsedTime;
-
-    if (particlesRef.current) {
-      particlesRef.current.rotation.y += delta * 0.2 * speed;
-      const m = particlesRef.current.material as THREE.PointsMaterial;
-      m.opacity = 0.55 + Math.sin(t * 1.0) * 0.12;
-    }
-    if (auraRef.current) {
-      const mat = auraRef.current.material as THREE.MeshBasicMaterial;
-      mat.opacity = 0.14 + Math.sin(t * 1.2) * 0.04;
-    }
-  });
-
-  return (
-    <group position={[0, 0, 0]}>
-      {/* Subtle ripple origin at stream base */}
-      <RippleRings speed={speed} platformY={platformY} />
-
-      {/* Slender energy stream - gradient fade to transparent */}
-      <mesh ref={auraRef} position={[0, platformY + 1.2, 0]}>
-        <cylinderGeometry args={[0.85, streamRadius, 2.6, 48, 1, true]} />
+      {/* Central bright light base */}
+      <mesh position={[0, platformY + 0.01, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[1.2, 64]} />
         <meshBasicMaterial
           color="#7dd3fc"
           transparent
           opacity={0.5}
-          alphaMap={alphaMap ?? undefined}
-          side={THREE.BackSide}
+          side={THREE.DoubleSide}
           depthWrite={false}
           blending={THREE.AdditiveBlending}
         />
       </mesh>
 
-      {/* Outer stream layer - soft gradient glow */}
+      {/* Ripple rings */}
+      <group position={[0, platformY + 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        {Array.from({ length: CONFIG.platform.rippleCount }).map((_, i) => (
+          <mesh key={i} ref={(el) => { rippleRefs.current[i] = el; }}>
+            <ringGeometry args={[0.25, 0.55, 64]} />
+            <meshBasicMaterial
+              color="#7dd3fc"
+              transparent
+              opacity={0.25}
+              side={THREE.DoubleSide}
+              depthWrite={false}
+              blending={THREE.AdditiveBlending}
+            />
+          </mesh>
+        ))}
+      </group>
+
+      {/* Upward light beam - soft volumetric */}
       <mesh position={[0, platformY + 1.1, 0]}>
-        <cylinderGeometry args={[1.0, streamRadius * 1.2, 2.4, 48, 1, true]} />
+        <cylinderGeometry args={[0.95, 0.55, 2.2, 48, 1, true]} />
         <meshBasicMaterial
           color="#7dd3fc"
           transparent
-          opacity={0.35}
-          alphaMap={alphaMap ?? undefined}
+          opacity={0.55}
+          alphaMap={beamTex ?? undefined}
           side={THREE.BackSide}
           depthWrite={false}
           blending={THREE.AdditiveBlending}
         />
       </mesh>
-
-      {/* Rising particles - energy stream from platform to globe */}
-      <Points
-        ref={particlesRef}
-        positions={risingParticles}
-        stride={3}
-        frustumCulled={false}
-      >
-        <PointMaterial
-          transparent
-          color="#7dd3fc"
-          size={0.02}
-          sizeAttenuation
-          depthWrite={false}
-          opacity={0.5}
-          blending={THREE.AdditiveBlending}
-        />
-      </Points>
     </group>
   );
 }
@@ -377,7 +229,7 @@ function ParticleField({ speed }: { speed: number }) {
   const pointsRef = useRef<THREE.Points>(null);
 
   const particles = useMemo(() => {
-    const count = 350;
+    const count = CONFIG.particles.count;
     const arr = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
       const r = 2.2 + Math.random() * 2.2;
@@ -416,27 +268,16 @@ function ParticleField({ speed }: { speed: number }) {
 }
 
 /* ----------------------------
-  Atmosphere + Halo
+  Atmosphere - outer glow
 ----------------------------- */
-function Atmosphere({ speed }: { speed: number }) {
-  const ref = useRef<THREE.Mesh>(null);
-
-  useFrame((state) => {
-    if (!ref.current) return;
-    const t = state.clock.elapsedTime;
-
-    ref.current.rotation.y += 0.0015 * speed;
-    const mat = ref.current.material as THREE.MeshBasicMaterial;
-    mat.opacity = 0.06 + Math.sin(t * 0.6) * 0.015;
-  });
-
+function Atmosphere() {
   return (
-    <mesh ref={ref}>
-      <sphereGeometry args={[1.82, 96, 96]} />
+    <mesh>
+      <sphereGeometry args={[1.78, 64, 64]} />
       <meshBasicMaterial
         color="#7dd3fc"
         transparent
-        opacity={0.07}
+        opacity={0.06}
         depthWrite={false}
         side={THREE.BackSide}
       />
@@ -444,10 +285,25 @@ function Atmosphere({ speed }: { speed: number }) {
   );
 }
 
+const ICON_SLOTS = 24;
+const REPOPULATE_INTERVAL = 5.5;
+const MOVE_SPEED = 0.4;
+
+function randomSpherePoint(rMin: number, rMax: number) {
+  const r = rMin + Math.random() * (rMax - rMin);
+  const theta = Math.random() * Math.PI * 2;
+  const phi = Math.acos(2 * Math.random() - 1);
+  return new THREE.Vector3(
+    r * Math.sin(phi) * Math.cos(theta),
+    r * Math.sin(phi) * Math.sin(theta),
+    r * Math.cos(phi)
+  );
+}
+
 /* ----------------------------
-  Icon Ring (real occlusion + smaller)
+  Floating Icons - distributed in 3D space, repopulate over time
 ----------------------------- */
-function IconRing({
+function FloatingIcons({
   services,
   speed,
   selectedId,
@@ -460,37 +316,68 @@ function IconRing({
   onSelect: (id: string) => void;
   occludeRef: React.RefObject<THREE.Object3D | null>;
 }) {
-  const ringRef = useRef<THREE.Group>(null);
-  const iconGroupRefs = useRef<Record<string, THREE.Group | null>>({});
+  const slotRefs = useRef<(THREE.Group | null)[]>([]);
+  const positionsRef = useRef<THREE.Vector3[]>([]);
+  const targetsRef = useRef<THREE.Vector3[]>([]);
+  const serviceIndicesRef = useRef<number[]>([]);
   const scaleRef = useRef<Record<string, number>>({});
+  const repopulateTimerRef = useRef(0);
   const [hovered, setHovered] = useState<string | null>(null);
+  const [, setRepopulateTick] = useState(0);
 
-  const radius = 2.35;
+  const slots = useMemo(() => {
+    const pos: THREE.Vector3[] = [];
+    const tgt: THREE.Vector3[] = [];
+    const idx: number[] = [];
+    for (let i = 0; i < ICON_SLOTS; i++) {
+      pos.push(randomSpherePoint(2.0, 2.6));
+      tgt.push(pos[i].clone());
+      idx.push(Math.floor(Math.random() * services.length));
+    }
+    positionsRef.current = pos;
+    targetsRef.current = tgt;
+    serviceIndicesRef.current = idx;
+    return { positions: pos, targets: tgt, serviceIndices: idx };
+  }, [services.length]);
+
+  const repopulate = useCallback(() => {
+    for (let i = 0; i < ICON_SLOTS; i++) {
+      targetsRef.current[i].copy(randomSpherePoint(2.0, 2.6));
+      if (Math.random() < 0.4) {
+        serviceIndicesRef.current[i] = Math.floor(Math.random() * services.length);
+      }
+    }
+    setRepopulateTick((t) => t + 1);
+  }, [services.length]);
 
   useFrame((_, delta) => {
-    if (ringRef.current) ringRef.current.rotation.y += delta * 0.25 * speed;
+    const dt = delta * speed;
+
+    repopulateTimerRef.current += dt;
+    if (repopulateTimerRef.current > REPOPULATE_INTERVAL) {
+      repopulateTimerRef.current = 0;
+      repopulate();
+    }
+
+    for (let i = 0; i < ICON_SLOTS; i++) {
+      positionsRef.current[i].lerp(targetsRef.current[i], dt * MOVE_SPEED);
+      slotRefs.current[i]?.position.copy(positionsRef.current[i]);
+    }
 
     for (const svc of services) {
       const isSelected = selectedId === svc.id;
       const isHovered = hovered === svc.id;
-
-      const base = 0.36;
-      const target = isSelected ? 0.62 : isHovered ? 0.48 : base;
-
-      const cur = scaleRef.current[svc.id] ?? base;
+      const target = isSelected ? 0.62 : isHovered ? 0.48 : 0.36;
+      const cur = scaleRef.current[svc.id] ?? 0.36;
       scaleRef.current[svc.id] = damp(cur, target, 10, delta);
     }
   });
 
   return (
-    <group ref={ringRef} rotation={[0.25, 0, 0]}>
-      {services.map((svc, i) => {
-        const a = (i / services.length) * Math.PI * 2;
-        const x = Math.cos(a) * radius;
-        const z = Math.sin(a) * radius;
-
+    <group>
+      {slots.positions.map((_, i) => {
+        const svc = services[serviceIndicesRef.current[i] ?? 0];
         const scale = scaleRef.current[svc.id] ?? 0.36;
-
         const isSelected = selectedId === svc.id;
         const isHovered = hovered === svc.id;
         const active = isSelected || isHovered;
@@ -509,18 +396,18 @@ function IconRing({
 
         return (
           <group
-            key={svc.id}
+            key={i}
             ref={(el) => {
-              iconGroupRefs.current[svc.id] = el;
+              slotRefs.current[i] = el;
             }}
-            position={[x, 0, z]}
+            position={slots.positions[i]}
           >
             <Html
               center
               transform
               sprite
               distanceFactor={14}
-              occlude={[occludeRef]}
+              occlude={[occludeRef as React.RefObject<THREE.Object3D>]}
               style={{
                 width: 72,
                 height: 72,
@@ -599,19 +486,16 @@ function GlobeSystem({
 
   return (
     <group ref={globeRef}>
-      {/* Solid opaque globe core - meshBasicMaterial so no light reflection/glow */}
+      {/* Core - solid opaque sphere */}
       <mesh ref={coreRef}>
-        <sphereGeometry args={[CONFIG.orb.size, 96, 96]} />
-        <meshBasicMaterial
-          color="#0a1628"
-          side={THREE.FrontSide}
-        />
+        <sphereGeometry args={[CONFIG.orb.size, 64, 64]} />
+        <meshBasicMaterial color="#0a1628" side={THREE.FrontSide} />
       </mesh>
 
-      <NetworkShell speed={speed} />
-      <Atmosphere speed={speed} />
+      <Globe speed={speed} />
+      <Atmosphere />
 
-      <IconRing services={services} speed={speed} selectedId={selectedId} onSelect={onSelect} occludeRef={coreRef} />
+      <FloatingIcons services={services} speed={speed} selectedId={selectedId} onSelect={onSelect} occludeRef={coreRef} />
     </group>
   );
 }
@@ -669,9 +553,9 @@ export default function ServicesGlobe3D({
         <pointLight position={[-5, -2, 5]} intensity={0.9} color="#7dd3fc" />
         <pointLight position={[0, 2.5, -5]} intensity={0.4} color="#7dd3fc" />
 
-        <PlatformAndAura speed={speed} />
+        <PlatformAndBeam speed={speed} />
         <GlobeSystem speed={speed} services={services} selectedId={selectedId} onSelect={onSelect} />
-        <GlobeMagicalAura speed={speed} />
+        <GlobeAura speed={speed} />
         <ParticleField speed={speed} />
 
         <EffectComposer>
